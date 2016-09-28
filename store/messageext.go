@@ -1,6 +1,6 @@
 package store
 
-type Message struct {
+type MessageExt struct {
 	topic                    string
 	flag                     int32
 	properties               map[string]string

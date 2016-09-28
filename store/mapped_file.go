@@ -10,11 +10,23 @@ import (
 	"sync/atomic"
 )
 
+//import proto "github.com/golang/protobuf/proto"
+//import golangmmap "golang.org/x/exp/mmap"
+
+const (
+	//PAGE CACHE SIZE
+	OS_PAGE_SIZE = 1024 * 4
+
+	//FLUSH page
+	FLUSH_LEAST_PAGE = 4
+)
+
 type MappedFile struct {
 	fileName                 string
 	fileSize                 int32
 	fileFromOffset           int32
 	file                     *os.File
+	mappedFile               mmap.MMap
 	totalMappedVirtualMemory int32
 	totoalMappedFiles        int32
 	wrotePosition            int32
@@ -22,11 +34,7 @@ type MappedFile struct {
 }
 
 type AppendMessageCallback interface {
-	DoAppend(fileFromOffset int32, file *os.File, maxBlank int32, msg *Message) bool
-}
-
-func DoAppend(fileFromOffset int32, file *os.File, maxBlank int32, msg *Message) bool {
-	return false
+	DoAppend(currentPosition int32, mappedfile mmap.MMap, maxBlank int32, msg *Message) (AppendMessageResut, error)
 }
 
 func CreateMappedFile(fileName string, fileSize int32) (*MappedFile, error) {
@@ -35,9 +43,6 @@ func CreateMappedFile(fileName string, fileSize int32) (*MappedFile, error) {
 		log.Panicf("thie file %s created error.", fileName)
 		return nil, err
 	}
-	dir := filepath.Dir(fileName)
-
-	fmt.Printf("file dir is %s ", dir)
 
 	fileFromOffset, err := strconv.Atoi(filepath.Base(fileName))
 	if err != nil {
@@ -45,14 +50,20 @@ func CreateMappedFile(fileName string, fileSize int32) (*MappedFile, error) {
 		return nil, err
 	}
 
-	//mmap
-	//mmap, err := mmap.Map(file, mmap.RDWR, 0)
+	file.Truncate(int64(fileSize))
+
+	mmap, err := mmap.MapRegion(file, int(fileSize), mmap.RDWR, 0, 0)
+	if err != nil {
+		log.Panicf("Mmap file %s occur error,so abort", file.Name())
+		os.Exit(1)
+	}
 
 	return &MappedFile{
-		fileName:       fileName,
-		fileSize:       fileSize,
-		fileFromOffset: int32(fileFromOffset),
-		file:           file,
+		fileName:                 fileName,
+		fileSize:                 fileSize,
+		fileFromOffset:           int32(fileFromOffset),
+		file:                     file,
+		mappedFile:               mmap,
 		totalMappedVirtualMemory: 0,
 		totoalMappedFiles:        0,
 		wrotePosition:            0,
@@ -61,30 +72,48 @@ func CreateMappedFile(fileName string, fileSize int32) (*MappedFile, error) {
 
 }
 
-func (mappedFile *MappedFile) AppendMessage(msg *Message) (bool, error) {
+func (mappedFile *MappedFile) AppendMessage(msg *Message) (AppendMessageResut, error) {
 
 	currentPosition := mappedFile.wrotePosition
 
 	if currentPosition < mappedFile.fileSize {
 
+		maxBlank := mappedFile.fileSize - currentPosition
+
+		result, err := DoAppend(currentPosition, mappedFile.mappedFile, maxBlank, msg)
+		if err != nil {
+			return AppendMessageResut{
+				appendMessageStatus: UNKNOWN_ERROR,
+			}, err
+		}
+
+		wroteBytes := result.wroteBytes
+
+		fmt.Printf("append message successful,wrote bytes is %d\n", wroteBytes)
+
+		atomic.AddInt32(&mappedFile.wrotePosition, int32(wroteBytes)+1)
+
+		return result, err
+
 	}
 
-	return false, nil
+	return AppendMessageResut{
+		appendMessageStatus: UNKNOWN_ERROR,
+	}, nil
 }
 
 func (mappedFile *MappedFile) AppendBytesMessage(data []byte) (bool, error) {
 	currentPosition := mappedFile.wrotePosition
 
-	if currentPosition < mappedFile.fileSize {
+	if currentPosition+int32(len(data)) < mappedFile.fileSize {
 
-		size, err := mappedFile.file.WriteAt(data, int64(currentPosition+1))
-
-		if err != nil {
-			log.Panicf("write data to file %s occur error", mappedFile.file.Name())
-			return false, err
+		for i := 0; i < len(data); i++ {
+			mappedFile.mappedFile[int(currentPosition)+i] = data[i]
 		}
 
-		atomic.AddInt32(&mappedFile.wrotePosition, int32(len(data)))
+		//mappedFile.mappedFile.Flush()
+
+		atomic.AddInt32(&mappedFile.wrotePosition, int32(len(data))+1)
 
 		return true, nil
 	}
@@ -98,4 +127,84 @@ func (mappedFile *MappedFile) GetWrotePosition() int32 {
 
 func (mappedFile *MappedFile) GetFileFromOfferset() int32 {
 	return mappedFile.fileFromOffset
+}
+
+//relase resource
+func (mappedFile *MappedFile) Release() {
+
+	mappedFile.mappedFile.Unmap()
+
+	mappedFile.file.Close()
+
+}
+
+//flush to disk.
+func (mappedFile *MappedFile) Commit() {
+	value := mappedFile.wrotePosition
+
+	mappedFile.mappedFile.Flush()
+
+	atomic.AddInt32(&mappedFile.commitedPosition, value)
+}
+
+//is able to flush
+func (mappedFile *MappedFile) IsAbleToFlush(flushAtLeastPage int) bool {
+	if mappedFile.IsFull() {
+		fmt.Println("the file is full")
+		return true
+	}
+
+	wrotePosition := mappedFile.wrotePosition
+	commitPosition := mappedFile.commitedPosition
+
+	if flushAtLeastPage > 0 {
+
+		return ((wrotePosition/int32(OS_PAGE_SIZE))-(commitPosition/int32(OS_PAGE_SIZE)) > int32(flushAtLeastPage))
+	}
+
+	return wrotePosition > commitPosition
+
+}
+
+//is full.
+func (mappedFile *MappedFile) IsFull() bool {
+	wrotePosition := mappedFile.wrotePosition
+
+	fileSize := mappedFile.fileSize
+
+	if wrotePosition == fileSize {
+		return true
+	}
+
+	return false
+}
+
+func (mappedFile *MappedFile) SelectMappedBuffer(pos, size int) ([]byte, error) {
+	if int32(pos+size) <= mappedFile.wrotePosition {
+
+		data := make([]byte, size)
+		copy(data, mappedFile.mappedFile[pos:])
+		return data, nil
+	}
+
+	return nil, nil
+}
+
+func (mappedFile *MappedFile) SelectMappedBufferByPos(pos int) ([]byte, error) {
+	if int32(pos) < mappedFile.wrotePosition && pos > 0 {
+		size := mappedFile.wrotePosition - int32(pos)
+		data := make([]byte, int(size))
+		copy(data, mappedFile.mappedFile[pos:])
+		return data, nil
+	}
+
+	return nil, nil
+
+}
+
+func (mappedFile *MappedFile) Destory() {
+	//first invoke release
+	mappedFile.Release()
+
+	os.Remove(mappedFile.file.Name())
 }
