@@ -125,6 +125,14 @@ func (mappedFile *MappedFile) GetWrotePosition() int32 {
 	return mappedFile.wrotePosition
 }
 
+func (mappedFile *MappedFile) SetWrotePosition(wrotePostion int32) {
+	atomic.AddInt32(&mappedFile.wrotePosition, wrotePostion)
+}
+
+func (mappedFile *MappedFile) SetCommitPosition(commitPosition int32) {
+	atomic.AddInt32(&mappedFile.commitedPosition, commitPosition)
+}
+
 func (mappedFile *MappedFile) GetFileFromOfferset() int32 {
 	return mappedFile.fileFromOffset
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"fmt"
 	"github.com/AllenRay/GoRocketMQ/store"
 )
@@ -8,12 +9,26 @@ import (
 import proto "github.com/golang/protobuf/proto"
 
 func main() {
-	mappedFile, err := store.CreateMappedFile("/home/leizhengyu/work/src/github.com/AllenRay/GoRocketMQ/start/0000000000", 10000000)
+
+	mappedFileQueue := &store.MappedFileQueue{
+		StorePath:      "/home/leizhengyu/work/src/github.com/AllenRay/GoRocketMQ/start",
+		MappedFileSize: 1000000,
+		MapedFiles:     list.New(),
+	}
+
+	mappedFile, err := mappedFileQueue.GetLastMappedFile(0000000000)
+
+	//mappedFile, err := store.CreateMappedFile("/home/leizhengyu/work/src/github.com/AllenRay/GoRocketMQ/start/0000000000", 10000000)
 
 	if err != nil {
 		fmt.Printf("The error is %s", err)
 		return
 	}
+
+	fileSize := mappedFileQueue.MapedFiles.Len()
+
+	fmt.Printf("file size is %d\n", fileSize)
+
 	//b := make([]byte, 10)
 
 	mappedFile.AppendBytesMessage([]byte("this is byte.."))
