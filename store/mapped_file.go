@@ -199,7 +199,7 @@ func (mappedFile *MappedFile) SelectMappedBuffer(pos, size int) ([]byte, error) 
 }
 
 func (mappedFile *MappedFile) SelectMappedBufferByPos(pos int) ([]byte, error) {
-	if int32(pos) < mappedFile.wrotePosition && pos > 0 {
+	if int32(pos) < mappedFile.wrotePosition && pos >= 0 {
 		size := mappedFile.wrotePosition - int32(pos)
 		data := make([]byte, int(size))
 		copy(data, mappedFile.mappedFile[pos:])
